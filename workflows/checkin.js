@@ -237,10 +237,56 @@ class CheckIn {
   async run() {
     const juejin = new JuejinHelper();
     try {
+      // 验证 cookie 是否为空
+      if (!this.cookie || this.cookie.trim() === '') {
+        throw new Error("Cookie 为空，请检查配置");
+      }
+      
+      // 验证 cookie 是否包含必要的字段
+      const hasSessionid = this.cookie.includes('sessionid=') || this.cookie.includes('sessionid_ss=');
+      const hasTeaTokens = this.cookie.includes('__tea_cookie_tokens');
+      
+      if (!hasSessionid) {
+        console.warn("⚠ 警告: Cookie 缺少 sessionid 字段");
+      }
+      if (!hasTeaTokens) {
+        console.warn("⚠ 警告: Cookie 缺少 __tea_cookie_tokens 字段");
+      }
+      
+      // 尝试解析 cookie tokens 以验证格式
+      try {
+        const tokensMatch = this.cookie.match(/__tea_cookie_tokens_\d+=([^;]+)/);
+        if (tokensMatch) {
+          const encodedValue = tokensMatch[1];
+          const decodedOnce = decodeURIComponent(encodedValue);
+          const decodedTwice = decodeURIComponent(decodedOnce);
+          JSON.parse(decodedTwice);
+        }
+      } catch (parseError) {
+        console.warn("⚠ 警告: __tea_cookie_tokens 格式可能不正确");
+      }
+      
       await juejin.login(this.cookie);
     } catch (e) {
-      console.error(e.message);
-      throw new Error("登录失败, 请尝试更新Cookies!");
+      const errorMsg = e.message || String(e);
+      console.error(`\n❌ 登录失败: ${errorMsg}`);
+      
+      // 如果是参数错误，提供更详细的提示
+      if (errorMsg.includes('参数错误') || errorMsg.includes('参数')) {
+        console.error("\n💡 提示: Cookie 可能已过期或格式不正确");
+        console.error("\n📝 请按以下步骤更新 Cookie:");
+        console.error("   1. 打开浏览器访问 https://juejin.cn");
+        console.error("   2. 确保已登录你的账号");
+        console.error("   3. 按 F12 打开开发者工具");
+        console.error("   4. 切换到 Network (网络) 标签");
+        console.error("   5. 刷新页面，找到任意一个请求");
+        console.error("   6. 点击该请求，在 Request Headers 中找到 Cookie");
+        console.error("   7. 复制完整的 Cookie 值（包括所有字段）");
+        console.error("   8. 更新 workflows/utils/env.js 中的 COOKIE 配置");
+        console.error("\n💻 或者运行测试脚本: yarn test-cookie");
+      }
+      
+      throw new Error(`登录失败: ${errorMsg}，请尝试更新 Cookie`);
     }
 
     this.username = juejin.getUser().user_name;
@@ -318,17 +364,39 @@ ${this.lotteriesTask.lotteryCount > 0 ? "==============\n" + drawLotteryHistory 
 
 async function run(args) {
   const cookies = utils.getUsersCookie(env);
+  
+  if (!cookies || cookies.length === 0) {
+    console.error("错误: 未找到任何 Cookie 配置");
+    console.error("请在 workflows/utils/env.js 中配置 COOKIE");
+    process.exit(1);
+  }
+  
+  console.log(`找到 ${cookies.length} 个用户配置`);
+  
   let messageList = [];
-  for (let cookie of cookies) {
-    const checkin = new CheckIn(cookie);
+  for (let i = 0; i < cookies.length; i++) {
+    const cookie = cookies[i];
+    console.log(`\n开始处理第 ${i + 1} 个用户...`);
+    
+    try {
+      const checkin = new CheckIn(cookie);
+      await utils.wait(utils.randomRangeNumber(1000, 5000)); // 初始等待1-5s
+      await checkin.run(); // 执行
 
-    await utils.wait(utils.randomRangeNumber(1000, 5000)); // 初始等待1-5s
-    await checkin.run(); // 执行
+      const content = checkin.toString();
+      console.log(content); // 打印结果
 
-    const content = checkin.toString();
-    console.log(content); // 打印结果
-
-    messageList.push(content);
+      messageList.push(content);
+    } catch (error) {
+      console.error(`处理第 ${i + 1} 个用户时出错: ${error.message}`);
+      // 继续处理下一个用户，不中断整个流程
+      continue;
+    }
+  }
+  
+  if (messageList.length === 0) {
+    console.error("\n所有用户处理失败，请检查 Cookie 配置");
+    process.exit(1);
   }
 
   const message = messageList.join(`\n${"-".repeat(15)}\n`);
